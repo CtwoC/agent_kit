@@ -1,8 +1,7 @@
 import os
 import asyncio
 from typing import Dict, Any
-from client.base_client import BaseLLMClient, Tool
-from client.claude_client import ClaudeClient
+from claude_client import ClaudeClient
 
 async def print_stream_chunks(chunks: Dict[str, Any]):
     """打印流式输出的内容"""
