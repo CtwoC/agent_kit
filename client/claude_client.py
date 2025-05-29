@@ -1,8 +1,7 @@
 """Claude API 客户端"""
-from typing import Dict, Any, AsyncIterator, List, Optional, Union
+from typing import Dict, Any, AsyncIterator, List, Optional
 from datetime import datetime
 from anthropic import AsyncAnthropic
-from anthropic.types import ContentBlock, MessageStream, Message
 from .base_client import BaseLLMClient
 
 class ToolResult:
