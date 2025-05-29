@@ -3,8 +3,8 @@ from typing import List
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-# mcp_url = "http://39.103.228.66:8165/mcp"
-local_mcp_url = "http://localhost:8165/mcp"
+mcp_url = "http://39.103.228.66:8165/mcp"
+# local_mcp_url = "http://localhost:8165/mcp"
 async def test_basic_features(client: Client):
     """测试基本功能：ping、列出工具、调用工具"""
     print("\n=== 测试基本功能 ===")
@@ -100,7 +100,7 @@ async def test_prompts(client: Client):
         print(f"Prompts test error: {e}")
 
 async def main():
-    transport = StreamableHttpTransport(local_mcp_url)
+    transport = StreamableHttpTransport(mcp_url)
     async with Client(transport) as client:
         # 运行所有测试
         await test_basic_features(client)

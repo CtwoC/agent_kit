@@ -115,33 +115,6 @@ optimization_suggestions = """
 4. 添加一些示例来说明如何回答
 """
 
-#%% 使用OpenAI优化器
-try:
-    print("=== 使用 OpenAI 优化 ===\n")
-    # 默认API端点
-    openai_optimizer = PromptOptimizer.create("openai")
-    openai_result = openai_optimizer.optimize(
-        original_prompt=original_prompt,
-        optimization_suggestions=optimization_suggestions
-    )
-    print("默认API端点结果:")
-    print(openai_result)
-    
-    # # 使用自定义API端点
-    # print("\n=== 使用自定义OpenAI端点 ===\n")
-    # custom_openai_optimizer = PromptOptimizer.create(
-    #     "openai",
-    #     base_url="http://43.130.31.174:8003/v1"  # 替换为你的自定义端点
-    # )
-    # custom_result = custom_openai_optimizer.optimize(
-    #     original_prompt=original_prompt,
-    #     optimization_suggestions=optimization_suggestions
-    # )
-    # print("自定义端点结果:")
-    # print(custom_result)
-except Exception as e:
-    print(f"OpenAI优化出错: {str(e)}")
-
 #%% 比较优化前后的差异
 def show_prompt_diff(original: str, optimized: str, title: str = "Prompt对比"):
     import difflib
@@ -169,6 +142,33 @@ def show_prompt_diff(original: str, optimized: str, title: str = "Prompt对比")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(diff_html)
     print(f"\n差异报告已保存到文件: {filename}")
+
+#%% 使用OpenAI优化器
+try:
+    print("=== 使用 OpenAI 优化 ===\n")
+    # 默认API端点
+    openai_optimizer = PromptOptimizer.create("openai")
+    openai_result = openai_optimizer.optimize(
+        original_prompt=original_prompt,
+        optimization_suggestions=optimization_suggestions
+    )
+    print("默认API端点结果:")
+    print(openai_result)
+    
+    # # 使用自定义API端点
+    # print("\n=== 使用自定义OpenAI端点 ===\n")
+    # custom_openai_optimizer = PromptOptimizer.create(
+    #     "openai",
+    #     base_url="http://43.130.31.174:8003/v1"  # 替换为你的自定义端点
+    # )
+    # custom_result = custom_openai_optimizer.optimize(
+    #     original_prompt=original_prompt,
+    #     optimization_suggestions=optimization_suggestions
+    # )
+    # print("自定义端点结果:")
+    # print(custom_result)
+except Exception as e:
+    print(f"OpenAI优化出错: {str(e)}")
 
 # 显示OpenAI优化结果的差异
 if 'openai_result' in locals():
