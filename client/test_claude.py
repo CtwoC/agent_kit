@@ -4,35 +4,31 @@ from typing import Dict, Any
 from claude_client import ClaudeClient
 
 async def print_stream_chunks(chunk: Dict[str, Any]):
-    """打印流式输出的内容"""
-    # 首先打印chunk的类型
+    """打印流式输出的内容
+    
+    Claude API 的流式响应中，文本内容有两种传递方式：
+    1. type="text" 的 chunk：完整的文本块，包含 snapshot
+    2. type="content_block_delta" 的 chunk：增量更新，只包含新增的文本
+    
+    我们选择只处理第二种，因为它能提供更细节的增量更新。
+    """
     chunk_type = chunk.get("type", "unknown")
     
-    # 根据不同的类型进行处理
-    if chunk_type == "text":
-        # 如果是文本类型，直接打印text字段
-        if "text" in chunk:
-            print(chunk["text"], end="", flush=True)
-    elif chunk_type == "content_block_delta":
+    # 只处理三种主要类型
+    if chunk_type == "content_block_delta":
         # 如果是content_block_delta类型，检查delta中的内容
         if "delta" in chunk:
             delta = chunk["delta"]
             if delta.get("type") == "text_delta" and "text" in delta:
+                # 打印增量更新的文本
                 print(delta["text"], end="", flush=True)
-    elif chunk_type == "message_start":
-        # 消息开始，可以忽略
-        pass
-    elif chunk_type == "content_block_start":
-        # 内容块开始，可以忽略
-        pass
-    elif chunk_type == "content_block_stop":
-        # 内容块结束，可以忽略
-        pass
-    elif chunk_type == "message_delta":
-        # 消息更新，可以忽略
-        pass
-    else:
-        # 其他类型的chunk，打印类型信息
+    elif chunk_type == "tool_use":
+        # 如果是工具调用
+        content_block = chunk.get("content_block", {})
+        print(f"\n[调用工具] {content_block.get('name', 'unknown')}")
+        print(f"参数: {content_block.get('input', {})}")
+    elif chunk_type not in ["message_start", "content_block_start", "content_block_stop", "message_delta"]:
+        # 其他非常规类型才打印类型信息
         print(f"[{chunk_type}]", end="", flush=True)
         
 async def main():
