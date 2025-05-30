@@ -50,7 +50,7 @@ class BaseLLMClient:
         """关闭 MCP 连接"""
         # 关闭所有 transport
         for transport in self.mcp_transports.values():
-            await transport.aclose()
+            transport.close()
                 
     async def _init_mcp_connection(self, url: str):
         """初始化单个 MCP 连接并获取工具列表

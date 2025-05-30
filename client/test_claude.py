@@ -3,16 +3,18 @@ import asyncio
 from typing import Dict, Any
 from claude_client import ClaudeClient
 
-async def print_stream_chunks(chunks: Dict[str, Any]):
+async def print_stream_chunks(chunk: Dict[str, Any]):
     """打印流式输出的内容"""
-    for chunk in chunks:
-        if "content" in chunk:
+    if "content" in chunk:
+        if isinstance(chunk["content"], list):
             for content in chunk["content"]:
                 if content["type"] == "text":
                     print(content["text"], end="", flush=True)
                 elif content["type"] == "tool_use":
                     print(f"\n[调用工具] {content['name']}")
                     print(f"参数: {content['input']}")
+        elif isinstance(chunk["content"], str):
+            print(chunk["content"], end="", flush=True)
         
 async def main():
     # 从环境变量获取 API key
