@@ -1,7 +1,7 @@
 """OpenAI API 客户端"""
 from typing import Dict, Any, AsyncIterator, List
 from openai import AsyncOpenAI
-from .base_client import BaseLLMClient
+from base_client import BaseLLMClient
 
 class OpenAIClient(BaseLLMClient):
     """OpenAI API 客户端"""

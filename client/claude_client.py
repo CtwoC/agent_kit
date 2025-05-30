@@ -2,7 +2,7 @@
 from typing import Dict, Any, AsyncIterator, List, Optional
 from datetime import datetime
 from anthropic import AsyncAnthropic
-from .base_client import BaseLLMClient
+from base_client import BaseLLMClient
 
 class ToolResult:
     """Tool 调用结果"""
