@@ -32,7 +32,7 @@ async def print_stream_chunks(chunk: Dict[str, Any]):
         if chunk_type == "text":
             pass
         else:
-            print(f"[{chunk_type}]", end="", flush=True)
+            print(f"\n[{chunk_type}]", end="", flush=True)
         
 async def main():
     # 从环境变量获取 API key
