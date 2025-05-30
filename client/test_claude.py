@@ -29,7 +29,10 @@ async def print_stream_chunks(chunk: Dict[str, Any]):
         print(f"参数: {content_block.get('input', {})}")
     elif chunk_type not in ["message_start", "content_block_start", "content_block_stop", "message_delta"]:
         # 其他非常规类型才打印类型信息
-        print(f"[{chunk_type}]", end="", flush=True)
+        if chunk_type == "text":
+            pass
+        else:
+            print(f"[{chunk_type}]", end="", flush=True)
         
 async def main():
     # 从环境变量获取 API key
