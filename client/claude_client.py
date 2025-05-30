@@ -17,7 +17,7 @@ class ClaudeClient(BaseLLMClient):
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-3-opus-20240229",
+        model: str = "claude-3-5-sonnet-20240620",
         max_tokens: int = 4096,
         max_history_messages: int = 6,  # 保留的历史消息数量
         **kwargs
@@ -137,7 +137,7 @@ class ClaudeClient(BaseLLMClient):
                     async for chunk in self._handle_stream(stream):
                         # 输出原始 chunk
                         chunk_data = chunk.model_dump()
-                        print(f"DEBUG: 收到chunk: {chunk_data}")  # 调试信息
+                        # print(f"DEBUG: 收到chunk: {chunk_data}")  # 调试信息
                         yield chunk_data
                     
                     print("DEBUG: 流式响应处理完成，获取最终消息")  # 调试信息
@@ -166,7 +166,7 @@ class ClaudeClient(BaseLLMClient):
                     tool_result = await self._process_tool_call(tool_calls[0])
                     if tool_result:
                         # 添加工具调用结果到对话内容
-                        tool_text = f"Tool ({tool_result.tool_name}): {tool_result.tool_result}\n"
+                        tool_text = f"Tool ({tool_result.tool_name}) Result: {tool_result.tool_result}\n"
                         self.current_conversation += tool_text
                         print(f"DEBUG: 工具调用成功: {tool_text}")  # 调试信息
                     else:
