@@ -33,7 +33,7 @@ class ClaudeClient(BaseLLMClient):
         )
         
         # 对话状态
-        self.message_history: List[Dict[str, Any]] = []
+        self.current_conversation = ""
         self.tool_results: List[ToolResult] = []
 
     async def _process_tool_call(self, tool_call: Dict[str, Any]) -> Optional[ToolResult]:
@@ -64,6 +64,23 @@ class ClaudeClient(BaseLLMClient):
             print(f"Tool call failed: {str(e)}")
             return None
             
+    def _format_assistant_content(self, content: List[Dict[str, Any]]) -> str:
+        """格式化助手的回复内容
+        
+        Args:
+            content: 助手回复的原始内容列表
+            
+        Returns:
+            格式化后的字符串
+        """
+        result = ""
+        for block in content:
+            if block["type"] == "text":
+                result += block["text"]
+            elif block["type"] == "tool_use":
+                result += f"\n[Tool Call: {block['name']}]\n{block['input']}\n"
+        return result.strip()
+    
     def _convert_tools_for_claude(self, tools: List[Tool]) -> List[Dict[str, Any]]:
         """将工具列表转换为 Claude 格式"""
         return [{
@@ -83,18 +100,21 @@ class ClaudeClient(BaseLLMClient):
         Yields:
             流式响应的 chunks
         """
-        # 添加用户消息
-        self.message_history.append({"role": "user", "content": content})
+        # 更新当前对话内容
+        if self.current_conversation:
+            self.current_conversation += f"\nUser: {content}\n"
+        else:
+            self.current_conversation = f"User: {content}\n"
         
         while True:
-            # 取最近的几条历史消息
-            recent_messages = self.message_history[-self.max_history_messages:]
+            # 创建消息格式
+            messages = [{"role": "user", "content": self.current_conversation}]
             
             # 创建流式会话
             async with self.client.messages.stream(
                 model=self.model,
                 max_tokens=self.max_tokens,
-                messages=recent_messages,
+                messages=messages,
                 tools=self._convert_tools_for_claude(self.get_available_tools()),
             ) as stream:
                 # 处理文本流
@@ -114,24 +134,20 @@ class ClaudeClient(BaseLLMClient):
                 # 检查工具调用
                 tool_calls = [block for block in message_json["content"] if block["type"] == "tool_use"]
                 
+                # 更新对话内容，添加助手的回复
+                assistant_text = "Assistant: " + self._format_assistant_content(current_assistant_content)
+                self.current_conversation += assistant_text + "\n"
+                
                 if not tool_calls:
                     # 没有工具调用，对话结束
-                    self.message_history.append({
-                        "role": "assistant",
-                        "content": current_assistant_content
-                    })
                     break
                     
                 # 处理工具调用
                 tool_result = await self._process_tool_call(tool_calls[0])
                 if tool_result:
-                    # 添加工具调用结果到历史消息
-                    self.message_history.append({
-                        "role": "tool",
-                        "content": tool_result.tool_result,
-                        "tool_name": tool_result.tool_name,
-                        "tool_call_id": tool_calls[0]["id"]
-                    })
+                    # 添加工具调用结果到对话内容
+                    tool_text = f"Tool ({tool_result.tool_name}): {tool_result.tool_result}\n"
+                    self.current_conversation += tool_text
                 else:
                     # 工具调用失败，结束对话
                     break
