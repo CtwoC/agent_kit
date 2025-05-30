@@ -5,19 +5,35 @@ from claude_client import ClaudeClient
 
 async def print_stream_chunks(chunk: Dict[str, Any]):
     """打印流式输出的内容"""
-    print(f"DEBUG: 收到chunk: {chunk}")  # 添加调试信息
-    if "content" in chunk:
-        print(f"DEBUG: chunk包含content字段: {chunk['content']}")  # 添加调试信息
-        if isinstance(chunk["content"], list):
-            for content in chunk["content"]:
-                print(f"DEBUG: 处理content: {content}")  # 添加调试信息
-                if content["type"] == "text":
-                    print(content["text"], end="", flush=True)
-                elif content["type"] == "tool_use":
-                    print(f"\n[调用工具] {content['name']}")
-                    print(f"参数: {content['input']}")
-        elif isinstance(chunk["content"], str):
-            print(chunk["content"], end="", flush=True)
+    # 首先打印chunk的类型
+    chunk_type = chunk.get("type", "unknown")
+    
+    # 根据不同的类型进行处理
+    if chunk_type == "text":
+        # 如果是文本类型，直接打印text字段
+        if "text" in chunk:
+            print(chunk["text"], end="", flush=True)
+    elif chunk_type == "content_block_delta":
+        # 如果是content_block_delta类型，检查delta中的内容
+        if "delta" in chunk:
+            delta = chunk["delta"]
+            if delta.get("type") == "text_delta" and "text" in delta:
+                print(delta["text"], end="", flush=True)
+    elif chunk_type == "message_start":
+        # 消息开始，可以忽略
+        pass
+    elif chunk_type == "content_block_start":
+        # 内容块开始，可以忽略
+        pass
+    elif chunk_type == "content_block_stop":
+        # 内容块结束，可以忽略
+        pass
+    elif chunk_type == "message_delta":
+        # 消息更新，可以忽略
+        pass
+    else:
+        # 其他类型的chunk，打印类型信息
+        print(f"[{chunk_type}]", end="", flush=True)
         
 async def main():
     # 从环境变量获取 API key
