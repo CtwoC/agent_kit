@@ -100,54 +100,78 @@ class ClaudeClient(BaseLLMClient):
         Yields:
             流式响应的 chunks
         """
+        print(f"DEBUG: chat_stream开始处理用户输入: {content}")  # 调试信息
+        
         # 更新当前对话内容
         if self.current_conversation:
             self.current_conversation += f"\nUser: {content}\n"
         else:
             self.current_conversation = f"User: {content}\n"
         
+        print(f"DEBUG: 当前对话内容:\n{self.current_conversation}")  # 调试信息
+        
         while True:
             # 创建消息格式
             messages = [{"role": "user", "content": self.current_conversation}]
+            print(f"DEBUG: 发送给API的消息: {messages}")  # 调试信息
+            
+            # 获取可用工具
+            available_tools = self.get_available_tools()
+            print(f"DEBUG: 可用工具数量: {len(available_tools)}")  # 调试信息
             
             # 创建流式会话
-            async with self.client.messages.stream(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=messages,
-                tools=self._convert_tools_for_claude(self.get_available_tools()),
-            ) as stream:
-                # 处理文本流
-                current_assistant_content = []
-                
-                async for chunk in self._handle_stream(stream):
-                    # 输出原始 chunk
-                    yield chunk.model_dump()
+            print("DEBUG: 准备创建流式会话...")  # 调试信息
+            try:
+                async with self.client.messages.stream(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=messages,
+                    tools=self._convert_tools_for_claude(available_tools),
+                ) as stream:
+                    print("DEBUG: 流式会话创建成功")  # 调试信息
                     
-                # 获取完整消息
-                final_message = await stream.get_final_message()
-                message_json = final_message.model_dump()
-                
-                # 收集助手的回复内容
-                current_assistant_content.extend(message_json["content"])
-                
-                # 检查工具调用
-                tool_calls = [block for block in message_json["content"] if block["type"] == "tool_use"]
-                
-                # 更新对话内容，添加助手的回复
-                assistant_text = "Assistant: " + self._format_assistant_content(current_assistant_content)
-                self.current_conversation += assistant_text + "\n"
-                
-                if not tool_calls:
-                    # 没有工具调用，对话结束
-                    break
+                    # 处理文本流
+                    current_assistant_content = []
                     
-                # 处理工具调用
-                tool_result = await self._process_tool_call(tool_calls[0])
-                if tool_result:
-                    # 添加工具调用结果到对话内容
-                    tool_text = f"Tool ({tool_result.tool_name}): {tool_result.tool_result}\n"
-                    self.current_conversation += tool_text
-                else:
-                    # 工具调用失败，结束对话
-                    break
+                    print("DEBUG: 开始处理流式响应...")  # 调试信息
+                    async for chunk in self._handle_stream(stream):
+                        # 输出原始 chunk
+                        chunk_data = chunk.model_dump()
+                        print(f"DEBUG: 收到chunk: {chunk_data}")  # 调试信息
+                        yield chunk_data
+                    
+                    print("DEBUG: 流式响应处理完成，获取最终消息")  # 调试信息
+                    # 获取完整消息
+                    final_message = await stream.get_final_message()
+                    message_json = final_message.model_dump()
+                    print(f"DEBUG: 最终消息: {message_json}")  # 调试信息
+                    
+                    # 收集助手的回复内容
+                    current_assistant_content.extend(message_json["content"])
+                    
+                    # 检查工具调用
+                    tool_calls = [block for block in message_json["content"] if block["type"] == "tool_use"]
+                    print(f"DEBUG: 发现工具调用: {len(tool_calls)}个")  # 调试信息
+                    
+                    # 更新对话内容，添加助手的回复
+                    assistant_text = "Assistant: " + self._format_assistant_content(current_assistant_content)
+                    self.current_conversation += assistant_text + "\n"
+                    
+                    if not tool_calls:
+                        print("DEBUG: 没有工具调用，对话结束")  # 调试信息
+                        break
+                    
+                    # 处理工具调用
+                    print(f"DEBUG: 开始处理工具调用: {tool_calls[0]}")  # 调试信息
+                    tool_result = await self._process_tool_call(tool_calls[0])
+                    if tool_result:
+                        # 添加工具调用结果到对话内容
+                        tool_text = f"Tool ({tool_result.tool_name}): {tool_result.tool_result}\n"
+                        self.current_conversation += tool_text
+                        print(f"DEBUG: 工具调用成功: {tool_text}")  # 调试信息
+                    else:
+                        print("DEBUG: 工具调用失败，对话结束")  # 调试信息
+                        break
+            except Exception as e:
+                print(f"DEBUG: 发生错误: {str(e)}")  # 调试信息
+                raise
