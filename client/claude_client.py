@@ -3,6 +3,7 @@ from typing import Dict, Any, AsyncIterator, List, Optional
 from datetime import datetime
 from anthropic import AsyncAnthropic
 from base_client import BaseLLMClient, Tool
+from utils.retry import async_retry
 
 class ToolResult:
     """Tool 调用结果"""
@@ -22,14 +23,21 @@ class ClaudeClient(BaseLLMClient):
         max_history_messages: int = 6,  # 保留的历史消息数量
         **kwargs
     ):
-        super().__init__(api_key, **kwargs)
+        # 将 LLM 相关参数从 kwargs 中分离出来
+        mcp_kwargs = {}
+        if 'mcp_urls' in kwargs:
+            mcp_kwargs['mcp_urls'] = kwargs.pop('mcp_urls')
+        if 'enable_timeout_retry' in kwargs:
+            mcp_kwargs['enable_timeout_retry'] = kwargs.pop('enable_timeout_retry')
+            
+        super().__init__(api_key, **mcp_kwargs)
         # 初始化 Claude 客户端
         self.model = model
         self.max_tokens = max_tokens
         self.max_history_messages = max_history_messages
         self.client = AsyncAnthropic(
             api_key=api_key,
-            base_url=self.llm_base_url,  # 如果为 None，使用默认的 API URL
+            **kwargs  # 直接透传其他参数给 SDK
         )
         
         # 对话状态
@@ -46,14 +54,22 @@ class ClaudeClient(BaseLLMClient):
             工具调用结果
         """
         tool_name = tool_call["name"]
+        
+        # 只处理 MCP 工具
+        if not self.get_tool_by_name(tool_name):
+            print(f"DEBUG: 跳过非 MCP 工具: {tool_name}")  # 调试信息
+            return None
+            
         tool_input = tool_call["input"]
         
         # 调用 MCP 工具
         try:
+            print(f"DEBUG: Claude开始调用工具 {tool_name}，参数: {tool_input}")
             result = await self.call_mcp_tool(
                 tool_name=tool_name,
                 params=tool_input
             )
+            print(f"DEBUG: Claude工具 {tool_name} 调用成功，结果: {result}")
             
             # 保存工具调用结果
             tool_result = ToolResult(tool_name, result)
@@ -61,7 +77,10 @@ class ClaudeClient(BaseLLMClient):
             return tool_result
             
         except Exception as e:
-            print(f"Tool call failed: {str(e)}")
+            print(f"ERROR: Claude工具调用最终失败 (所有重试都用完)")
+            print(f"  工具名称: {tool_name}")
+            print(f"  输入参数: {tool_input}")
+            print(f"  最终异常: {type(e).__name__}: {str(e)}")
             return None
             
     def _format_assistant_content(self, content: List[Dict[str, Any]]) -> str:
@@ -84,18 +103,72 @@ class ClaudeClient(BaseLLMClient):
     def _convert_tools_for_claude(self, tools: List[Tool]) -> List[Dict[str, Any]]:
         """将工具列表转换为 Claude 格式"""
         return [{
-            "type": "custom",
-            "name": tool.name,
-            "description": tool.description,
-            "input_schema": tool.input_schema
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema
+            }
         } for tool in tools]
     
-    async def chat_stream(self, content: str) -> AsyncIterator[Dict[str, Any]]:
+    @async_retry(timeout=60.0)
+    async def chat(self, content: str, **kwargs) -> Dict[str, Any]:
+        """对话
+        
+        Args:
+            content: 当前轮次的对话内容
+            
+        Returns:
+            对话响应
+        """
+        # 更新当前对话内容
+        if self.current_conversation:
+            self.current_conversation += f"\nUser: {content}\n"
+        else:
+            self.current_conversation = f"User: {content}\n"
+            
+        print(f"DEBUG: 当前对话内容:\n{self.current_conversation}")  # 调试信息
+        
+        # 获取可用工具列表
+        mcp_tools = self.get_available_tools()
+        
+        # 合并用户传入的工具和 MCP 工具
+        if 'tools' in kwargs:
+            user_tools = kwargs.pop('tools')
+            all_tools = mcp_tools + user_tools
+        else:
+            all_tools = mcp_tools
+        
+        # 创建消息列表
+        messages = [{"role": "user", "content": self.current_conversation}]
+        
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            messages=messages,
+            tools=self._convert_tools_for_claude(all_tools),
+            **kwargs
+        )
+        
+        response_data = response.model_dump()
+        
+        # 处理工具调用
+        if response_data.get("content"):
+            for content_item in response_data["content"]:
+                if content_item.get("type") == "tool_call":
+                    result = await self._process_tool_call(content_item)
+                    if result:
+                        # 更新对话内容
+                        tool_response = f"Tool {result.tool_name} returned: {result.tool_result}\n"
+                        self.current_conversation += f"Assistant: {tool_response}"
+        
+        return response_data
+    
+    async def chat_stream(self, content: str, **kwargs) -> AsyncIterator[Dict[str, Any]]:
         """多轮对话和工具调用的流式处理
         
         Args:
             content: 当前轮次的对话内容
-            tools: 可用的工具列表
             
         Yields:
             流式响应的 chunks
@@ -116,8 +189,15 @@ class ClaudeClient(BaseLLMClient):
             print(f"DEBUG: 发送给API的消息: {messages}")  # 调试信息
             
             # 获取可用工具
-            available_tools = self.get_available_tools()
-            print(f"DEBUG: 可用工具数量: {len(available_tools)}")  # 调试信息
+            mcp_tools = self.get_available_tools()
+            print(f"DEBUG: 可用工具数量: {len(mcp_tools)}")  # 调试信息
+            
+            # 合并用户传入的工具和 MCP 工具
+            if 'tools' in kwargs:
+                user_tools = kwargs.pop('tools')
+                all_tools = mcp_tools + user_tools
+            else:
+                all_tools = mcp_tools
             
             # 创建流式会话
             print("DEBUG: 准备创建流式会话...")  # 调试信息
@@ -126,7 +206,8 @@ class ClaudeClient(BaseLLMClient):
                     model=self.model,
                     max_tokens=self.max_tokens,
                     messages=messages,
-                    tools=self._convert_tools_for_claude(available_tools),
+                    tools=self._convert_tools_for_claude(all_tools),
+                    **kwargs
                 ) as stream:
                     print("DEBUG: 流式会话创建成功")  # 调试信息
                     
@@ -137,7 +218,10 @@ class ClaudeClient(BaseLLMClient):
                     async for chunk in self._handle_stream(stream):
                         # 输出原始 chunk
                         chunk_data = chunk.model_dump()
-                        # print(f"DEBUG: 收到chunk: {chunk_data}")  # 调试信息
+                        # 获取usage信息
+                        if chunk_data.get("type") == "tool":
+                            usage = chunk_data.get("usage")
+                            
                         yield chunk_data
                     
                     print("DEBUG: 流式响应处理完成，获取最终消息")  # 调试信息
@@ -145,6 +229,11 @@ class ClaudeClient(BaseLLMClient):
                     final_message = await stream.get_final_message()
                     message_json = final_message.model_dump()
                     print(f"DEBUG: 最终消息: {message_json}")  # 调试信息
+
+                    # 处理usage信息
+                    if usage:
+                        self.usage.input_tokens += usage.get("input_tokens", 0)
+                        self.usage.output_tokens += usage.get("output_tokens", 0)
                     
                     # 收集助手的回复内容
                     current_assistant_content.extend(message_json["content"])
@@ -166,7 +255,7 @@ class ClaudeClient(BaseLLMClient):
                     tool_result = await self._process_tool_call(tool_calls[0])
                     if tool_result:
                         # 添加工具调用结果到对话内容
-                        tool_text = f"Tool ({tool_result.tool_name}) Result: {tool_result.tool_result}\n"
+                        tool_text = f"Tool ({tool_result.tool_name}) Result Returned: {tool_result.tool_result}\n"
                         self.current_conversation += tool_text
                         print(f"DEBUG: 工具调用成功: {tool_text}")  # 调试信息
                     else:
