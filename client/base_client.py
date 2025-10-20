@@ -138,6 +138,31 @@ class BaseLLMClient:
         """关闭 MCP 连接"""
         # StreamableHttpTransport 使用了 asynccontextmanager，会自动处理资源清理
         pass
+    
+    async def reset(self):
+        """重置客户端状态用于连接池复用"""
+        # 重置对话状态（如果存在）
+        if hasattr(self, 'current_conversation'):
+            self.current_conversation = ""
+        if hasattr(self, 'tool_results'):
+            self.tool_results.clear()
+        if hasattr(self, 'thinking_process'):
+            self.thinking_process.clear()
+            
+        # 重置使用统计
+        self.usage.reset()
+        
+        # 注意：不重置 mcp_tools 和 mcp_transports，因为它们是连接级别的资源
+        # 如果需要重置 MCP 连接，应该使用 close() 然后重新初始化
+    
+    async def close(self):
+        """显式关闭连接和清理资源"""
+        # 清理 MCP 传输连接
+        self.mcp_transports.clear()
+        self.mcp_tools.clear()
+        
+        # 重置使用统计
+        self.usage.reset()
                 
     def get_available_tools(self) -> List[Tool]:
         """获取所有可用的工具列表"""

@@ -3,13 +3,17 @@ from typing import List
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-mcp_url = "http://39.103.228.66:8165/mcp"
-# local_mcp_url = "http://localhost:8165/mcp"
+mcp_url = "http://39.103.228.66:8165/mcp/"
+# local_mcp_url = "http://localhost:8165/mcp/"
 async def test_basic_features(client: Client):
     """测试基本功能：ping、列出工具、调用工具"""
     print("\n=== 测试基本功能 ===")
     await client.ping()
     print("ping success")
+
+    # initialize
+    init_info = client.initialize_result
+    print(f"initialize result: {init_info}")
 
     # list tools
     tools = await client.list_tools()

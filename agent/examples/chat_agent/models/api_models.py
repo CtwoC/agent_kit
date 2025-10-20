@@ -76,7 +76,7 @@ class HealthResponse(BaseModel):
 class SystemStatus(BaseModel):
     """系统状态"""
     uptime: float = Field(description="运行时间(秒)")
-    memory_usage: Dict[str, Any] = Field(description="内存使用情况")
+    memory_usage: Dict[str, float] = Field(description="内存使用情况")
     redis_info: Dict[str, Any] = Field(description="Redis状态信息")
     active_connections: int = Field(description="活跃连接数")
     processed_conversations: int = Field(description="已处理对话数")

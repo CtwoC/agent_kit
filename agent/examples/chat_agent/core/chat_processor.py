@@ -70,17 +70,41 @@ class ChatProcessor:
                 # 写入Redis流式存储
                 await self._write_stream_chunk(redis_client, stream_key, chunk_data)
                 
-                # 累积内容
-                if chunk_data.get("type") == "content":
-                    response_content += chunk_data.get("chunk", "")
-                    
-                # 更新进度
-                if chunk_data.get("type") == "progress":
-                    status_info.progress = min(0.9, 0.3 + chunk_data.get("progress", 0) * 0.6)
+                # 处理OpenAI客户端返回的不同类型的chunk
+                chunk_type = chunk_data.get("type", "")
+                logger.debug(f"📦 处理chunk类型: {chunk_type}")
                 
-                # 记录token使用情况
-                if chunk_data.get("type") == "usage":
+                if chunk_type == "start":
+                    # 开始信号
+                    logger.info("🎯 收到开始信号")
+                elif chunk_type == "response.output_text.delta":
+                    # OpenAI流式响应的文本内容增量
+                    delta_content = chunk_data.get("delta", "")
+                    if delta_content:
+                        response_content += delta_content
+                        logger.debug(f"📝 累积内容长度: {len(response_content)}")
+                elif chunk_type == "response.output_text.done":
+                    # OpenAI流式响应的文本完成
+                    full_text = chunk_data.get("text", "")
+                    if full_text and not response_content:
+                        # 如果没有通过delta累积到内容，使用完整文本
+                        response_content = full_text
+                        logger.info(f"📄 使用完整文本，长度: {len(response_content)}")
+                elif chunk_type == "response.completed":
+                    # 完成信号，包含usage信息
+                    logger.info("🎉 收到完成信号")
+                elif chunk_type == "usage":
+                    # Token使用统计
                     tokens_used = chunk_data.get("total_tokens", 0)
+                    logger.info(f"📊 Token使用: {tokens_used}")
+                elif chunk_type == "complete":
+                    # 我们自定义的完成信号
+                    logger.info("✅ 收到自定义完成信号")
+                elif chunk_type == "error":
+                    # 错误信号
+                    error_msg = chunk_data.get("error", "未知错误")
+                    logger.error(f"❌ 收到错误信号: {error_msg}")
+                    break
             
             # 完成处理
             completion_data = {
@@ -127,22 +151,20 @@ class ChatProcessor:
     async def _build_context(self, enhanced_data: Dict[str, Any]) -> str:
         """构建对话上下文"""
         try:
-            profile: CustomerProfile = enhanced_data.get("customer_profile")
             memory: CustomerMemory = enhanced_data.get("customer_memory") 
-            preferences = enhanced_data.get("customer_preferences", {})
             message = enhanced_data.get("message")
             
-            # 构建系统提示词
-            system_prompt = self._build_system_prompt(profile, preferences)
+            # 使用固定的默认系统提示词
+            system_prompt = self._get_default_system_prompt()
             
-            # 构建对话历史
+            # 构建对话历史（从数据库获取，暂时使用现有逻辑）
             conversation_history = self._build_conversation_history(memory)
             
-            # 组合完整上下文
+            # 组合完整上下文，只拼接真正的变量
             context_parts = [
                 f"系统提示词:\n{system_prompt}",
                 f"对话历史:\n{conversation_history}" if conversation_history else "",
-                f"客户当前消息:\n{message}"
+                f"用户输入:\n{message}"
             ]
             
             context = "\n\n".join(part for part in context_parts if part)
@@ -154,47 +176,26 @@ class ChatProcessor:
             logger.warning(f"上下文构建失败，使用简单模式: {str(e)}")
             return f"用户消息: {enhanced_data.get('message', '')}"
     
-    def _build_system_prompt(self, profile: CustomerProfile, preferences: Dict[str, Any]) -> str:
-        """构建个性化系统提示词"""
-        base_prompt = """你是一个专业的AI客服助手，能够为客户提供优质的服务和支持。"""
-        
-        # 根据客户等级调整
-        if profile.service_level == "premium":
-            base_prompt += "\n你正在为VIP客户提供服务，请格外用心和专业。"
-        elif profile.service_level == "enterprise":
-            base_prompt += "\n你正在为企业客户提供服务，请保持商务专业的沟通风格。"
-        
-        # 根据历史满意度调整
-        if profile.satisfaction_score and profile.satisfaction_score < 3.0:
-            base_prompt += "\n这位客户之前的满意度较低，请特别耐心和细致地解答问题。"
-        
-        # 根据偏好调整
-        if preferences.get("communication_style") == "formal":
-            base_prompt += "\n请使用正式的沟通风格。"
-        elif preferences.get("communication_style") == "casual":
-            base_prompt += "\n请使用轻松友好的沟通风格。"
-        
-        if preferences.get("language") == "en":
-            base_prompt += "\nPlease respond in English."
-        else:
-            base_prompt += "\n请用中文回复。"
-        
-        return base_prompt
+    def _get_default_system_prompt(self) -> str:
+        """获取默认系统提示词"""
+        # TODO: 后续会从数据库获取，目前使用固定的默认提示词
+        return """你是一个专业的AI助手，能够为用户提供优质的服务和支持。请用中文回复，保持友好和专业的态度。"""
     
     def _build_conversation_history(self, memory: CustomerMemory) -> str:
         """构建对话历史"""
-        if not memory.short_term:
+        # TODO: 后续会从数据库获取历史对话，目前使用现有逻辑
+        if not memory or not memory.short_term:
             return ""
         
         history_parts = []
         
-        # 添加长期记忆摘要
+        # 添加长期记忆摘要（如果有）
         if memory.long_term_summary:
             history_parts.append(f"历史对话摘要: {memory.long_term_summary}")
         
         # 添加最近对话
         for conv in memory.short_term[-5:]:  # 只取最近5条
-            history_parts.append(f"客户: {conv.customer_message}")
+            history_parts.append(f"用户: {conv.customer_message}")
             history_parts.append(f"AI: {conv.agent_message}")
         
         return "\n".join(history_parts)
@@ -251,46 +252,84 @@ class ChatProcessor:
             logger.warning(f"流式存储完成标记失败: {str(e)}")
     
     async def _generate_stream_response(self, context: str, enhanced_data: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
-        """生成流式响应（模拟AI生成过程）"""
+        """生成流式响应（调用OpenAI客户端）"""
+        client = None
         try:
-            # 模拟AI响应生成
-            # 在实际实现中，这里会调用OpenAI客户端
+            # 使用服务配置（不允许请求覆盖）
+            api_key = self.settings.openai.api_key
+            base_url = self.settings.openai.base_url
+            # mcp_url = "http://39.103.228.66:8165/mcp/"
+            mcp_urls = []  # MCP服务地址，可以考虑加入配置
+            
+            logger.info(f"🔧 准备创建OpenAI客户端...")
+            logger.info(f"  - 模型: {self.settings.openai.model}")
+            logger.info(f"  - Base URL: {base_url}")
+            logger.info(f"  - MCP URL: {mcp_urls}")
+            logger.info(f"  - API Key前8位: {api_key[:8] if api_key else 'None'}")
+            
+            # 创建OpenAI客户端
+            from client.openai_client import OpenAIClient
+            
+            client_kwargs = {}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            
+            # 创建并初始化客户端
+            logger.info("🚀 创建OpenAI客户端实例...")
+            client = OpenAIClient(
+                api_key=api_key,
+                model=self.settings.openai.model,
+                mcp_urls=mcp_urls,
+                **client_kwargs
+            )
+            
+            # 手动初始化客户端（调用__aenter__）
+            logger.info("🔌 初始化客户端连接...")
+            await client.__aenter__()
+            logger.info("✅ 客户端初始化完成")
             
             # 发送开始信号
+            logger.info("🎯 开始流式对话生成...")
             yield {"type": "start", "message": "开始生成回复"}
             
-            # 模拟流式生成文本
-            response_text = f"您好！我已经收到您的消息：{enhanced_data.get('message', '')}。作为您的AI助手，我很乐意为您提供帮助。"
+            # 调用流式对话
+            chunk_count = 0
+            logger.info("📡 调用client.stream_chat...")
+            async for chunk in client.stream_chat(context):
+                chunk_count += 1
+                logger.debug(f"📦 收到第{chunk_count}个chunk: {chunk.get('type', 'unknown')}")
+                # 直接yield OpenAI客户端返回的chunk
+                yield chunk
             
-            # 分chunk发送
-            chunk_size = self.settings.stream.chunk_size
-            for i in range(0, len(response_text), chunk_size):
-                chunk = response_text[i:i + chunk_size]
-                
+            logger.info(f"✨ 流式对话完成，共收到{chunk_count}个chunks")
+            
+            # 发送usage统计信息（从客户端获取）
+            if hasattr(client, 'usage') and client.usage:
+                logger.info(f"📊 Token使用统计: 输入={client.usage.input_tokens}, 输出={client.usage.output_tokens}")
                 yield {
-                    "type": "content",
-                    "chunk": chunk,
-                    "index": i // chunk_size
+                    "type": "usage",
+                    "input_tokens": client.usage.input_tokens,
+                    "output_tokens": client.usage.output_tokens,
+                    "total_tokens": client.usage.input_tokens + client.usage.output_tokens
                 }
-                
-                # 模拟生成延迟
-                await asyncio.sleep(self.settings.stream.write_interval)
-                
-                # 发送进度更新
-                progress = min(1.0, (i + chunk_size) / len(response_text))
-                yield {"type": "progress", "progress": progress}
-            
-            # 发送使用情况统计
-            yield {
-                "type": "usage",
-                "input_tokens": len(context) // 4,  # 粗略估算
-                "output_tokens": len(response_text) // 4,
-                "total_tokens": (len(context) + len(response_text)) // 4
-            }
             
             # 发送完成信号
+            logger.info("🎉 发送完成信号")
             yield {"type": "complete", "message": "回复生成完成"}
             
         except Exception as e:
-            logger.error(f"流式生成失败: {str(e)}")
-            yield {"type": "error", "error": str(e)} 
+            logger.error(f"❌ 流式生成失败: {str(e)}")
+            logger.error(f"   错误类型: {type(e).__name__}")
+            import traceback
+            logger.error(f"   错误堆栈: {traceback.format_exc()}")
+            yield {"type": "error", "error": str(e)}
+            
+        finally:
+            # 确保客户端被正确关闭
+            if client:
+                try:
+                    logger.info("🔌 关闭客户端连接...")
+                    await client.__aexit__(None, None, None)
+                    logger.info("✅ 客户端关闭完成")
+                except Exception as e:
+                    logger.warning(f"⚠️ 客户端关闭失败: {str(e)}") 

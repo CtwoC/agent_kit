@@ -10,6 +10,8 @@ import json
 from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 from datetime import datetime
+import time
+import logging
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -110,16 +112,20 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """健康检查"""
+    """快速健康检查 - 不执行慢速操作"""
     try:
-        # 检查Redis连接
-        redis_client = await get_redis_client()
-        redis_connected = await redis_client.ping()
-        
-        # 获取处理状态
+        # 获取处理状态（快速操作）
         async with user_lock:
             active_customers = len(user_processing)
             processing_customers = list(user_processing)
+        
+        # 快速Redis检查 - 只检查连接是否存在
+        redis_connected = True
+        try:
+            redis_client = await get_redis_client()
+            redis_connected = redis_client._client is not None
+        except Exception:
+            redis_connected = False
         
         return HealthResponse(
             status="healthy",
@@ -134,6 +140,42 @@ async def health_check():
     except Exception as e:
         logger.error(f"健康检查失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"健康检查失败: {str(e)}")
+
+@app.get("/health/deep")
+async def deep_health_check():
+    """深度健康检查 - 包含Redis ping等慢速操作"""
+    try:
+        # 获取处理状态
+        async with user_lock:
+            active_customers = len(user_processing)
+            processing_customers = list(user_processing)
+        
+        # 深度Redis检查 - 执行ping操作
+        redis_connected = False
+        redis_ping_time = 0.0
+        try:
+            start_time = time.time()
+            redis_client = await get_redis_client()
+            redis_connected = await redis_client.ping()
+            redis_ping_time = time.time() - start_time
+        except Exception as e:
+            logger.warning(f"Redis ping失败: {str(e)}")
+        
+        return {
+            "status": "healthy" if redis_connected else "degraded",
+            "service": settings.app_name,
+            "version": settings.version,
+            "timestamp": datetime.now().isoformat(),
+            "redis_connected": redis_connected,
+            "redis_ping_time": f"{redis_ping_time:.3f}s",
+            "active_customers": active_customers,
+            "processing_customers": processing_customers,
+            "check_type": "deep"
+        }
+        
+    except Exception as e:
+        logger.error(f"深度健康检查失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"深度健康检查失败: {str(e)}")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_non_stream(request: ChatRequest, background_tasks: BackgroundTasks):
@@ -235,6 +277,7 @@ async def stream_chat(request: ChatRequest):
     # 流式处理
     async def stream_with_cleanup():
         """带清理的流式响应生成器"""
+        processing_task = None
         try:
             logger.info(f"🌊 开始流式聊天处理: {uid}")
             
@@ -257,45 +300,93 @@ async def stream_chat(request: ChatRequest):
             }
             yield f"data: {json.dumps(start_event, ensure_ascii=False)}\n\n"
             
-            # 执行核心流程并获取流式数据
-            result = await process_chat_request(request_data, parallel=False)
+            # 启动处理任务（异步执行）
+            processing_task = asyncio.create_task(
+                process_chat_request(request_data, parallel=False)
+            )
             
-            # 获取流式数据
-            if result.get("stream_key"):
-                redis_client = await get_redis_client()
+            # 获取Redis客户端
+            redis_client = await get_redis_client()
+            
+            # 实时读取chunks
+            chunks_sent = 0
+            processing_completed = False
+            
+            # 使用与ChatProcessor相同的stream_key格式
+            expected_stream_key = f"stream:{uid}:{request_data['session_id']}"
+            
+            while not processing_completed:
+                try:
+                    # 检查处理任务是否完成
+                    if processing_task.done():
+                        processing_completed = True
+                        result = await processing_task
+                        
+                        # 确认最终的stream_key
+                        if result.get("stream_key"):
+                            expected_stream_key = result["stream_key"]
+                    
+                    # 读取新的chunks
+                    chunks = await redis_client.lrange(f"{expected_stream_key}:chunks", 0, -1)
+                    
+                    if chunks:
+                        # 发送新的chunks（从上次发送的位置开始）
+                        total_chunks = len(chunks)
+                        if total_chunks > chunks_sent:
+                            # 由于使用lpush，新的chunks在前面，需要反转并选择新的
+                            new_chunks = list(reversed(chunks))[chunks_sent:]
+                            
+                            for chunk_json in new_chunks:
+                                try:
+                                    chunk_data = json.loads(chunk_json)
+                                    chunk_type = chunk_data.get("type", "")
+                                    
+                                    # 发送所有有意义的chunks，不只是delta
+                                    if chunk_type in ["response.output_text.delta", "response.output_text.done", "usage", "response.completed"]:
+                                        # 添加调试日志
+                                        logger.info(f"🌊 发送chunk类型: {chunk_type}")
+                                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
+                                except json.JSONDecodeError:
+                                    continue
+                            
+                            chunks_sent = total_chunks
+                    
+                    # 如果处理未完成，等待一小段时间再检查
+                    if not processing_completed:
+                        await asyncio.sleep(0.1)  # 100ms检查间隔
+                        
+                except Exception as e:
+                    logger.error(f"读取chunks时出错: {str(e)}")
+                    await asyncio.sleep(0.1)
+            
+            # 处理完成后，确保所有chunks都已发送
+            if processing_task.done():
+                result = await processing_task
                 
-                # 从Redis读取流式chunks
-                chunks = await redis_client.lrange(f"{result['stream_key']}:chunks", 0, -1)
+                # 发送完成事件
+                completion_event = {
+                    "type": "complete",
+                    "message": "处理完成",
+                    "uid": uid,
+                    "session_id": request_data["session_id"],
+                    "full_content": result.get("response_content", ""),
+                    "metadata": {
+                        "tokens_used": result.get("tokens_used", 0),
+                        "flow_duration": result.get("flow_duration", 0)
+                    },
+                    "timestamp": datetime.now().isoformat()
+                }
+                yield f"data: {json.dumps(completion_event, ensure_ascii=False)}\n\n"
                 
-                # 发送所有chunks
-                for chunk_json in reversed(chunks):  # 因为用的lpush，所以需要反转
-                    try:
-                        chunk_data = json.loads(chunk_json)
-                        yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-                        # 添加小延迟模拟实时效果
-                        await asyncio.sleep(0.05)
-                    except json.JSONDecodeError:
-                        continue
-            
-            # 发送完成事件
-            completion_event = {
-                "type": "complete",
-                "message": "处理完成",
-                "uid": uid,
-                "session_id": request_data["session_id"],
-                "full_content": result.get("response_content", ""),
-                "metadata": {
-                    "tokens_used": result.get("tokens_used", 0),
-                    "flow_duration": result.get("flow_duration", 0)
-                },
-                "timestamp": datetime.now().isoformat()
-            }
-            yield f"data: {json.dumps(completion_event, ensure_ascii=False)}\n\n"
-            
-            logger.info(f"✅ 流式聊天完成: {uid}")
+                logger.info(f"✅ 流式聊天完成: {uid}")
             
         except Exception as e:
             logger.error(f"❌ 流式聊天异常: {uid} - {str(e)}")
+            
+            # 取消处理任务
+            if processing_task and not processing_task.done():
+                processing_task.cancel()
+                
             error_event = {
                 "type": "error",
                 "error": f"处理请求时发生错误: {str(e)}",

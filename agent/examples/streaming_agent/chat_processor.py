@@ -48,8 +48,6 @@ class ChatProcessor:
         mcp_url = os.getenv("MCP_URL", "http://39.103.228.66:8165/mcp/")
         base_url = os.getenv("OPENAI_BASE_URL", "http://43.130.31.174:8003/v1")
         
-        print(f"🔗 创建OpenAI客户端: base_url={base_url}")
-        
         return OpenAIClient(
             api_key=api_key,
             base_url=base_url,
