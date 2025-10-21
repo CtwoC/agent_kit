@@ -179,7 +179,8 @@ class OpenAIClient(BaseLLMClient):
             if output.get("type") == "message":
                 content_blocks = output.get("content", [])
                 for block in content_blocks:
-                    if block.get("type") == "text":
+                    # Response API 使用 "output_text" 类型
+                    if block.get("type") in ["text", "output_text"]:
                         text_content += block.get("text", "")
         return text_content
 
