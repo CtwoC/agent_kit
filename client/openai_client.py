@@ -93,23 +93,25 @@ class OpenAIClient(BaseLLMClient):
             chat_tools.append(chat_tool)
         return chat_tools
 
-    async def _process_chat_tool_call(self, tool_call: Dict[str, Any]) -> Optional[ToolResult]:
-        """处理非流式对话中的工具调用
-        
+    async def _process_response_tool_call(self, output: Dict[str, Any]) -> Optional[ToolResult]:
+        """处理非流式 Response API 中的工具调用
+
         Args:
-            tool_call: 工具调用信息，格式为 chat completions API 的格式
-            
+            output: 工具调用信息，格式为 Response API 的格式
+
         Returns:
             工具调用结果
         """
-        tool_name = tool_call["function"]["name"]
-        
+        if output.get("type") != "function_call" or output.get("status") != "completed":
+            return None
+
+        tool_name = output.get("name")
         # 只处理 MCP 工具
         if not self.get_tool_by_name(tool_name):
             print(f"DEBUG: 跳过非 MCP 工具: {tool_name}")  # 调试信息
             return None
-            
-        tool_input = json.loads(tool_call["function"]["arguments"])
+
+        tool_input = json.loads(output.get("arguments", "{}"))
         return await self._call_tool(tool_name, tool_input)
     
     async def _process_stream_tool_call(self, output: Dict[str, Any]) -> Optional[ToolResult]:
@@ -163,110 +165,104 @@ class OpenAIClient(BaseLLMClient):
             print(f"  最终异常: {type(e).__name__}: {str(e)}")
             return None
 
-    def _format_assistant_content(self, content: List[Dict[str, Any]]) -> str:
-        """格式化助手的回复内容
-        
+    def _extract_text_from_response_output(self, outputs: List[Dict[str, Any]]) -> str:
+        """从 Response API 的 output 中提取文本内容
+
         Args:
-            content: 助手的回复内容列表
-            
+            outputs: Response API 返回的 output 列表
+
         Returns:
-            格式化后的内容
+            提取的文本内容
         """
-        formatted_content = ""
-        for item in content:
-            if item["role"] == "assistant":
-                if item.get("content"):
-                    formatted_content += item["content"]
-                elif item.get("tool_calls"):
-                    # OpenAI 的工具调用不会返回对话内容
-                    pass
-        return formatted_content
+        text_content = ""
+        for output in outputs:
+            if output.get("type") == "message":
+                content_blocks = output.get("content", [])
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        text_content += block.get("text", "")
+        return text_content
 
     @async_retry(timeout=60.0)
     async def chat(self, content: str, **kwargs) -> Dict[str, Any]:
-        """对话
-        
+        """对话 - 使用 Response API（无状态模式）
+
         Args:
             content: 当前轮次的对话内容
-            
+
         Returns:
             对话响应
         """
         print(f"DEBUG: chat开始处理用户输入: {content}")  # 调试信息
-        
-        # 更新当前对话内容
+
+        # 更新当前对话内容（客户端管理状态）
         if self.current_conversation:
             self.current_conversation += f"\nUser: {content}\n"
         else:
             self.current_conversation = f"User: {content}\n"
-        
+
         print(f"DEBUG: 当前对话内容:\n{self.current_conversation}")  # 调试信息
-        
+
         # 循环处理，直到没有工具调用
         while True:
             # 获取可用工具列表
             tools = self.get_available_tools()
-            chat_tools = self._convert_mcp_tools_to_chat_format(tools)
+            mcp_tools = self._convert_mcp_tools_to_openai_format(tools)
             print(f"DEBUG: 可用工具数量: {len(tools)}")  # 调试信息
-            
+
             # 合并用户传入的工具和 MCP 工具
             if 'tools' in kwargs:
                 user_tools = kwargs.pop('tools')
-                all_tools = chat_tools + user_tools
+                all_tools = mcp_tools + user_tools
             else:
-                all_tools = chat_tools
-            
-            print(f"DEBUG: 准备调用chat completions API...")  # 调试信息
-            
-            # 调用chat completions API
-            response = await self.client.chat.completions.create(
+                all_tools = mcp_tools
+
+            print(f"DEBUG: 准备调用 Response API（无状态模式）...")  # 调试信息
+
+            # 调用 Response API（无状态模式：store=False）
+            response = await self.client.responses.create(
                 model=self.model,
-                messages=[
-                    {"role": "user", "content": self.current_conversation}
-                ],
-                tools=all_tools if all_tools else None,  # 如果没有工具就不传tools参数
+                input=[{"role": "user", "content": self.current_conversation}],
+                tools=all_tools if all_tools else None,
+                store=False,  # 🔑 关键：不使用服务端状态管理，保持客户端管理
                 **kwargs
             )
-            
+
             response_data = response.model_dump()
-            print(f"DEBUG: 收到API响应")  # 调试信息
-            
-            # 更新usage统计
+            print(f"DEBUG: 收到 Response API 响应")  # 调试信息
+
+            # 更新usage统计（Response API 使用 input_tokens/output_tokens）
             if usage := response_data.get("usage"):
-                self.usage.input_tokens += usage.get("prompt_tokens", 0)
-                self.usage.output_tokens += usage.get("completion_tokens", 0)
-                print(f"DEBUG: 更新usage - 输入:{usage.get('prompt_tokens', 0)}, 输出:{usage.get('completion_tokens', 0)}")
-            
-            message = response_data["choices"][0]["message"]
-            
+                self.usage.input_tokens += usage.get("input_tokens", 0)
+                self.usage.output_tokens += usage.get("output_tokens", 0)
+                print(f"DEBUG: 更新usage - 输入:{usage.get('input_tokens', 0)}, 输出:{usage.get('output_tokens', 0)}")
+
+            # 处理 Response API 的输出格式
+            outputs = response_data.get("output", [])
+
+            # 提取文本内容
+            assistant_content = self._extract_text_from_response_output(outputs)
+
             # 检查是否有工具调用
             has_tool_calls = False
-            if message.get("tool_calls"):
-                print(f"DEBUG: 发现{len(message['tool_calls'])}个工具调用")  # 调试信息
-                
-                # 添加助手消息到对话历史
-                assistant_content = message.get("content", "")
-                if assistant_content:
-                    self.current_conversation += f"Assistant: {assistant_content}\n"
-                
-                # 处理每个工具调用
-                for tool_call in message["tool_calls"]:
-                    result = await self._process_chat_tool_call(tool_call)
+            for output in outputs:
+                if output.get("type") == "function_call":
+                    print(f"DEBUG: 发现工具调用: {output.get('name')}")  # 调试信息
+                    result = await self._process_response_tool_call(output)
                     if result:
                         has_tool_calls = True
                         # 添加工具调用结果到对话内容
                         tool_response = f"Tool <{result.tool_name}> returned: {result.tool_result}\n"
                         self.current_conversation += tool_response
                         print(f"DEBUG: 工具调用结果已添加到对话")
-            else:
-                # 没有工具调用，添加助手回复到对话历史
-                assistant_content = message.get("content", "")
-                if assistant_content:
-                    self.current_conversation += f"Assistant: {assistant_content}\n"
-                print(f"DEBUG: 没有工具调用，对话结束")
-            
+
+            # 添加助手回复到对话历史
+            if assistant_content:
+                self.current_conversation += f"Assistant: {assistant_content}\n"
+
             # 如果没有工具调用，返回响应
             if not has_tool_calls:
+                print(f"DEBUG: 没有工具调用，对话结束")
                 print(f"DEBUG: chat函数完成")
                 return response_data
             else:
@@ -310,11 +306,12 @@ class OpenAIClient(BaseLLMClient):
             print("DEBUG: 准备创建流式会话...")  # 调试信息
             print(all_tools)  # 调试信息
             try:
-                # 使用上下文管理器创建流式会话
+                # 使用上下文管理器创建流式会话（无状态模式）
                 async with await self.client.responses.create(
                     model=self.model,
                     input=[{"role": "user", "content": self.current_conversation}],
-                    tools=all_tools,
+                    tools=all_tools if all_tools else None,
+                    store=False,  # 🔑 关键：不使用服务端状态管理，保持客户端管理
                     stream=True,
                     **kwargs
                 ) as stream:
