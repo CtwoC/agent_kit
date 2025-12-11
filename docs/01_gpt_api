@@ -1,0 +1,18 @@
+from openai import OpenAI
+
+# llmo专用key
+client = OpenAI(
+    api_key="YOUR_OPENAI_API_KEY_HERE"  # 请替换为你的 OpenAI API Key
+)
+completion = client.chat.completions.create(
+    model="gpt-4.1",
+    messages=[
+        {"role": "user", "content": [
+            {"type": "image_url",
+             "image_url": {"url": "https://dashscope.oss-cn-beijing.aliyuncs.com/images/dog_and_girl.jpeg"}},
+            {"type": "text", "text": "What is this"},
+            ]}
+    ],
+)
+print(completion.choices[0].message)
+# ChatCompletionMessage(content='This image shows a woman sitting on the beach at sunset, giving a high-five to a large dog (possibly a Labrador Retriever) wearing a harness. The two seem to be enjoying a happy and playful moment by the ocean, with the sun creating a warm and serene atmosphere.', refusal=None, role='assistant', audio=None, function_call=None, tool_calls=None, annotations=[])
